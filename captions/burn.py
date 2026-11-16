@@ -5,11 +5,15 @@ Burn "never say / say" style captions into a vertical video.
 Look: white rounded box, bold black serif text, 2-5 words at a time, at chest
 height. In "Never say X." the X phrase is red; in "Say Y." the Y phrase is green.
 
+Face-safe: the presenter's face is found in the video and captions are placed
+below it (or above it if there's no room below), so they never cover the face.
+Turn off with --no-face-check.
+
 Usage:
   python burn.py --video in.mp4 --srt captions.srt --out out.mp4
   python burn.py --video in.mp4 --script script.txt --out out.mp4   # no SRT: times spread evenly
 
-Requires: ffmpeg on PATH, Pillow.
+Requires: ffmpeg on PATH, Pillow; opencv-python-headless for the face check.
 """
 import argparse
 import os
@@ -200,7 +204,75 @@ def render_chunk(chunk, video_w, path):
     return img.size
 
 
-def build(video, out, cues, y_frac=0.44, keep_tmp=False):
+# ---------------------------------------------------------------- face-safe placement
+
+SAFE_TOP = 0.10      # keep captions below the very top of the frame
+SAFE_BOTTOM = 0.78   # keep captions above TikTok/Reels buttons and description
+FACE_GAP = 0.025     # space between face and caption box (fraction of height)
+
+
+def find_face_band(video, samples=15):
+    """Return (top, bottom) of the presenter's face as fractions of height, or None.
+
+    Samples frames across the video and takes a generous band around every
+    face found, so head movement is covered too.
+    """
+    try:
+        import cv2
+    except ImportError:
+        print("face check: opencv not installed - using fixed caption height")
+        return None
+    cascades = [cv2.CascadeClassifier(cv2.data.haarcascades + n)
+                for n in ("haarcascade_frontalface_alt2.xml", "haarcascade_frontalface_default.xml")]
+    cap = cv2.VideoCapture(video)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+    tops, bottoms = [], []
+    for k in range(samples):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(total * (k + 0.5) / samples))
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        H, W = frame.shape[:2]
+        gray = cv2.equalizeHist(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+        for casc in cascades:
+            faces = casc.detectMultiScale(gray, 1.05, 4, minSize=(int(W * 0.12), int(W * 0.12)))
+            # a real presenter face: reasonably big, roughly centred, in the upper 2/3
+            faces = [f for f in faces
+                     if W * 0.12 <= f[2] <= W * 0.75
+                     and W * 0.1 <= f[0] + f[2] / 2 <= W * 0.9
+                     and f[1] + f[3] / 2 <= H * 0.68]
+            if faces:
+                x, y, w, h = max(faces, key=lambda f: f[2])
+                # Haar boxes stop at the mouth/chin line; extend for chin and hair
+                tops.append((y - 0.25 * h) / H)
+                bottoms.append((y + 1.18 * h) / H)
+                break
+    cap.release()
+    if len(tops) < max(2, samples // 4):
+        print("face check: no clear face found - using fixed caption height")
+        return None
+    band = (max(0.0, min(tops)), min(1.0, max(bottoms)))
+    print(f"face check: face from {band[0]:.2f} to {band[1]:.2f} of height ({len(tops)}/{samples} frames)")
+    return band
+
+
+def safe_center(preferred, box_h_frac, face):
+    """Pick the caption centre (fraction of height) that keeps the box off the face."""
+    half = box_h_frac / 2
+    if not face:
+        return preferred
+    top, bottom = face
+    lo = bottom + FACE_GAP + half                     # highest centre that clears the chin
+    if lo + half <= SAFE_BOTTOM:
+        return max(preferred, lo)                     # below the face (chest), never higher than wanted
+    hi = top - FACE_GAP - half                        # no room below: try above the head
+    if hi - half >= SAFE_TOP:
+        return hi
+    print("face check: face fills the frame - captions placed as low as allowed")
+    return SAFE_BOTTOM - half
+
+
+def build(video, out, cues, y_frac=0.44, keep_tmp=False, face_check=True):
     W, H = probe_size(video)
     words = words_with_times(cues)
     colors = assign_colors([w[0] for w in words])
@@ -217,6 +289,12 @@ def build(video, out, cues, y_frac=0.44, keep_tmp=False):
         if end - ch[-1][2] > 0.6:  # don't hold a caption through a long pause
             end = ch[-1][2] + 0.25
         overlays.append((p, start, end, cw, chh))
+
+    if overlays:
+        box_h = max(o[4] for o in overlays) / float(H)
+        face = find_face_band(video) if face_check else None
+        y_frac = safe_center(y_frac, box_h, face)
+        print(f"captions centred at {y_frac:.2f} of height")
 
     # ffmpeg filter graph: chain overlays, each enabled only in its window
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", video]
@@ -260,6 +338,7 @@ def main():
     ap.add_argument("--script", help="text file; used only when no SRT is given")
     ap.add_argument("--y", type=float, default=0.44, help="vertical centre of captions (0-1 of height)")
     ap.add_argument("--keep-tmp", action="store_true")
+    ap.add_argument("--no-face-check", action="store_true", help="don't move captions off the face")
     a = ap.parse_args()
     if a.srt:
         cues = read_srt(a.srt)
@@ -268,7 +347,7 @@ def main():
             cues = cues_from_script(f.read(), probe_duration(a.video))
     else:
         sys.exit("give --srt or --script")
-    n = build(a.video, a.out, cues, a.y, a.keep_tmp)
+    n = build(a.video, a.out, cues, a.y, a.keep_tmp, not a.no_face_check)
     print(f"burned {n} captions -> {a.out}")
 
 

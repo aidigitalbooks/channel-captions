@@ -1,0 +1,93 @@
+name: Caption channel videos
+
+# One repo for every channel. Which channel a video belongs to comes from its HeyGen title,
+# using channels.json. Videos whose title matches no channel are skipped - never guessed.
+#
+# Runs three ways:
+#  1. Instantly: the Cloudflare relay starts it when HeyGen finishes a video (repository_dispatch)
+#  2. By hand: Actions tab -> "Caption channel videos" -> Run workflow (paste a video ID)
+#  3. Once a day as a safety net: catches any channel video the relay missed
+on:
+  schedule:
+    - cron: "23 13 * * *"
+  workflow_dispatch:
+    inputs:
+      video_id:
+        description: "HeyGen video ID (leave empty to process all new channel videos)"
+        required: false
+        default: ""
+  repository_dispatch:
+    types: [heygen_video]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: caption-${{ github.event.client_payload.video_id || github.event.inputs.video_id || 'sweep' }}
+  cancel-in-progress: false
+
+jobs:
+  caption:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HEYGEN_API_KEY: ${{ secrets.HEYGEN_API_KEY }}
+      GH_TOKEN: ${{ github.token }}
+      NOTIFY_WEBHOOK: ${{ secrets.NOTIFY_WEBHOOK }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg + Pillow
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --quiet pillow
+
+      - name: Work out which videos to caption
+        run: |
+          ID="${{ github.event.inputs.video_id }}"
+          if [ -z "$ID" ]; then ID="${{ github.event.client_payload.video_id }}"; fi
+          if [ -n "$ID" ]; then
+            echo "$ID" > ids.txt
+          else
+            ARGS=()
+            while read -r P; do ARGS+=(--prefix "$P"); done < <(python captions/channels.py prefixes)
+            python captions/heygen.py list-new "${ARGS[@]}" --hours 48 > ids.txt
+          fi
+          echo "Candidates:"; cat ids.txt || true
+
+      - name: Caption and publish
+        run: |
+          REPO="${{ github.repository }}"
+          while read -r ID; do
+            [ -z "$ID" ] && continue
+            echo "=== $ID"
+            rm -rf work && mkdir work
+            python captions/heygen.py fetch "$ID" --out work
+            TITLE=$(python -c "import json;print(json.load(open('work/meta.json')).get('title') or '')")
+            if ! MATCH=$(python captions/channels.py match "$TITLE"); then
+              echo "No channel matches title '$TITLE' - skipped (nothing published)."
+              continue
+            fi
+            IFS=, read -r SLUG CAP_Y BRAND CHANNEL <<< "$MATCH"
+            echo "Channel: $CHANNEL ($SLUG), Metricool brand $BRAND"
+            TAG="$SLUG-$ID"
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "Already done: $TAG"; continue
+            fi
+            if [ ! -f work/captions.srt ]; then
+              echo "::warning::No caption file from HeyGen for $ID - skipped."
+              continue
+            fi
+            OUT="$SLUG-$ID.mp4"
+            python captions/burn.py --video work/video.mp4 --srt work/captions.srt --out "$OUT" --y "$CAP_Y"
+            gh release create "$TAG" "$OUT" --title "$TITLE" \
+              --notes "Channel: $CHANNEL | Metricool brand: $BRAND | HeyGen video: $ID"
+            URL="https://github.com/$REPO/releases/download/$TAG/$OUT"
+            echo "Captioned video: $URL"
+            echo "- **$CHANNEL** (brand $BRAND): [$TITLE]($URL)" >> "$GITHUB_STEP_SUMMARY"
+            if [ -n "$NOTIFY_WEBHOOK" ]; then
+              ID="$ID" TITLE="$TITLE" URL="$URL" CHANNEL="$CHANNEL" BRAND="$BRAND" python -c "import json,os,urllib.request as u; d=json.dumps({k.lower():os.environ[k] for k in ('ID','TITLE','URL','CHANNEL','BRAND')}).encode(); u.urlopen(u.Request(os.environ['NOTIFY_WEBHOOK'],data=d,headers={'Content-Type':'application/json'}),timeout=30)" \
+                || echo "::warning::notify webhook failed"
+            fi
+          done < ids.txt

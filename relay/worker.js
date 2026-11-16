@@ -1,0 +1,83 @@
+// Captions relay (Cloudflare Worker) - shared by every persona
+//
+// HeyGen  --"video finished"-->  this Worker  --starts-->  each persona's GitHub caption job
+// Each persona's job checks the video title (Gus..., Nora...) and skips videos that aren't its own.
+//
+// Settings needed in Cloudflare (Settings -> Variables and Secrets):
+//   GITHUB_REPO     (text)    one or more repos, comma-separated, e.g.
+//                             yourname/gus-captions,yourname/nora-captions
+//   GITHUB_TOKEN    (secret)  GitHub fine-grained token with Contents: Read and write on those repos
+//   HEYGEN_API_KEY  (secret)  your HeyGen API key (only used once, by /setup)
+//   RELAY_TOKEN     (secret)  any long random password you make up
+//
+// One-time: open  https://<your-worker>.workers.dev/setup?token=<RELAY_TOKEN>  in a browser
+// to register this Worker with HeyGen.
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const token = url.searchParams.get("token") || "";
+    const authorized = env.RELAY_TOKEN && token === env.RELAY_TOKEN;
+
+    // ---- one-time: register the webhook with HeyGen
+    if (url.pathname === "/setup") {
+      if (!authorized) return text("Wrong or missing token.", 401);
+      const hookUrl = `${url.origin}/heygen?token=${encodeURIComponent(env.RELAY_TOKEN)}`;
+      const headers = { "X-Api-Key": env.HEYGEN_API_KEY, "Content-Type": "application/json", Accept: "application/json" };
+
+      // skip if already registered
+      try {
+        const list = await fetch("https://api.heygen.com/v1/webhook/endpoint.list", { headers });
+        const lj = await list.json();
+        const existing = (lj.data || []).find((e) => e.url === hookUrl);
+        if (existing) return text("Already connected to HeyGen. You're all set.");
+      } catch (e) { /* fall through and try to add */ }
+
+      const r = await fetch("https://api.heygen.com/v1/webhook/endpoint.add", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ url: hookUrl, events: ["avatar_video.success"] }),
+      });
+      const body = await r.text();
+      if (!r.ok) return text(`HeyGen said no (${r.status}): ${body}`, 502);
+      return text("Webhook registered with HeyGen. You're all set.\n\n" + body);
+    }
+
+    // ---- HeyGen calls this when a video finishes
+    if (url.pathname === "/heygen") {
+      if (request.method !== "POST") return text("ok"); // HeyGen may check the URL first
+      if (!authorized) return text("Wrong or missing token.", 401);
+      let payload = {};
+      try { payload = await request.json(); } catch (e) { return text("bad json", 400); }
+      if (payload.event_type !== "avatar_video.success") return text("ignored: " + payload.event_type);
+      const videoId = payload.event_data && payload.event_data.video_id;
+      if (!videoId) return text("no video_id", 400);
+
+      const repos = (env.GITHUB_REPO || "").split(",").map((r) => r.trim()).filter(Boolean);
+      const results = [];
+      let failed = false;
+      for (const repo of repos) {
+        const gh = await fetch(`https://api.github.com/repos/${repo}/dispatches`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "captions-relay",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ event_type: "heygen_video", client_payload: { video_id: videoId } }),
+        });
+        if (gh.status === 204) results.push(`${repo}: started`);
+        else { failed = true; results.push(`${repo}: GitHub said no (${gh.status}) ${await gh.text()}`); }
+      }
+      return text(`video ${videoId}\n` + results.join("\n"), failed ? 502 : 200);
+    }
+
+    return text("Captions relay is running.");
+  },
+};
+
+function text(s, status = 200) {
+  return new Response(s, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+}

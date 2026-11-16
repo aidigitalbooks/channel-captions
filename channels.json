@@ -1,0 +1,14 @@
+{
+  "_help": "One entry per channel. 'title_starts_with' must match the start of the HeyGen video title (case doesn't matter). Videos that match no channel are skipped.",
+  "channels": [
+    {
+      "name": "Nora Valeen",
+      "title_starts_with": "Nora Valeen",
+      "slug": "nora",
+      "caption_style": "gus",
+      "caption_y": 0.44,
+      "metricool_brand_id": 7812813,
+      "heygen_avatar_group_id": "2dcab04e046e49faaa6aa1b9c0070806"
+    }
+  ]
+}

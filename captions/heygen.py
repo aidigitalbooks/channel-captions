@@ -12,18 +12,35 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
 API = "https://api.heygen.com"
 
 
-def call(path):
+RETRY_CODES = {408, 410, 425, 429, 500, 502, 503, 504}
+
+
+def call(path, attempts=4):
+    """GET a HeyGen API path. Retries brief HeyGen hiccups (e.g. the 410s seen on 2026-11-18)."""
     key = os.environ.get("HEYGEN_API_KEY")
     if not key:
         sys.exit("HEYGEN_API_KEY is not set")
     req = urllib.request.Request(API + path, headers={"X-Api-Key": key, "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.loads(r.read().decode())
+    for i in range(attempts):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code not in RETRY_CODES or i == attempts - 1:
+                raise
+            wait = 15 * (i + 1)
+        except urllib.error.URLError:
+            if i == attempts - 1:
+                raise
+            wait = 15 * (i + 1)
+        print(f"HeyGen API busy ({path}); retrying in {wait}s", file=sys.stderr)
+        time.sleep(wait)
 
 
 def download(url, path):

@@ -59,11 +59,22 @@ jobs:
       - name: Caption and publish
         run: |
           REPO="${{ github.repository }}"
-          while read -r ID; do
+          FAILED=""
+          # Read IDs on fd 3 so ffmpeg (or anything else) can't swallow the list from stdin
+          while read -r ID <&3; do
+            ID="${ID//[[:space:]]/}"
             [ -z "$ID" ] && continue
             echo "=== $ID"
+            if ! [[ "$ID" =~ ^[0-9a-f]{32}$ ]]; then
+              echo "::warning::'$ID' is not a valid HeyGen video ID - skipped."
+              continue
+            fi
             rm -rf work && mkdir work
-            python captions/heygen.py fetch "$ID" --out work
+            if ! python captions/heygen.py fetch "$ID" --out work; then
+              echo "::error::Could not fetch $ID from HeyGen - skipped, continuing with the rest."
+              FAILED="$FAILED $ID"
+              continue
+            fi
             TITLE=$(python -c "import json;print(json.load(open('work/meta.json')).get('title') or '')")
             if ! MATCH=$(python captions/channels.py match "$TITLE"); then
               echo "No channel matches title '$TITLE' - skipped (nothing published)."
@@ -80,7 +91,11 @@ jobs:
               continue
             fi
             OUT="$SLUG-$ID.mp4"
-            python captions/burn.py --video work/video.mp4 --srt work/captions.srt --out "$OUT" --y "$CAP_Y"
+            if ! python captions/burn.py --video work/video.mp4 --srt work/captions.srt --out "$OUT" --y "$CAP_Y" < /dev/null; then
+              echo "::error::Captioning failed for $ID - skipped, continuing with the rest."
+              FAILED="$FAILED $ID"
+              continue
+            fi
             gh release create "$TAG" "$OUT" --title "$TITLE" \
               --notes "Channel: $CHANNEL | Metricool brand: $BRAND | HeyGen video: $ID"
             URL="https://github.com/$REPO/releases/download/$TAG/$OUT"
@@ -90,4 +105,8 @@ jobs:
               ID="$ID" TITLE="$TITLE" URL="$URL" CHANNEL="$CHANNEL" BRAND="$BRAND" python -c "import json,os,urllib.request as u; d=json.dumps({k.lower():os.environ[k] for k in ('ID','TITLE','URL','CHANNEL','BRAND')}).encode(); u.urlopen(u.Request(os.environ['NOTIFY_WEBHOOK'],data=d,headers={'Content-Type':'application/json'}),timeout=30)" \
                 || echo "::warning::notify webhook failed"
             fi
-          done < ids.txt
+          done 3< ids.txt
+          if [ -n "$FAILED" ]; then
+            echo "::error::These videos were not captioned:$FAILED (re-run this job, or run it by hand with the video ID)"
+            exit 1
+          fi

@@ -297,7 +297,7 @@ def build(video, out, cues, y_frac=0.44, keep_tmp=False, face_check=True):
         print(f"captions centred at {y_frac:.2f} of height")
 
     # ffmpeg filter graph: chain overlays, each enabled only in its window
-    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", video]
+    cmd = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", video]
     for p, *_ in overlays:
         cmd += ["-i", p]
     parts = []
@@ -316,7 +316,7 @@ def build(video, out, cues, y_frac=0.44, keep_tmp=False, face_check=True):
     cmd += ["-filter_complex_script", script_path, "-map", f"[{last}]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
             "-c:a", "copy", "-movflags", "+faststart", out]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL)
     if not keep_tmp:
         shutil.rmtree(tmp, ignore_errors=True)
     return len(overlays)

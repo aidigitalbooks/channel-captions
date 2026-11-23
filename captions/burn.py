@@ -12,6 +12,7 @@ Turn off with --no-face-check.
 Usage:
   python burn.py --video in.mp4 --srt captions.srt --out out.mp4
   python burn.py --video in.mp4 --script script.txt --out out.mp4   # no SRT: times spread evenly
+  python burn.py ... --colors '{"red": ["wine isn't helping"], "green": ["drink water"]}'   # per-video colours
 
 Requires: ffmpeg on PATH, Pillow; opencv-python-headless for the face check.
 """
@@ -125,6 +126,26 @@ def assign_colors(words):
             # a sentence ending right after 'say' (e.g. "never say.") keeps nothing coloured
             mode = None
         sentence_start = ends
+    return colors
+
+
+def apply_phrase_colors(words, colors, phrases):
+    """Optional per-video colouring: phrases = {"red": [...], "green": [...]}.
+    Every word sequence matching a phrase (case and punctuation ignored) gets that colour."""
+    if not phrases:
+        return colors
+    def pn(w):
+        return re.sub(r"[^a-z0-9']", "", w.lower().replace("’", "'"))
+    toks = [pn(w) for w in words]
+    for name, col in (("red", RED), ("green", GREEN)):
+        for ph in phrases.get(name, []) or []:
+            pt = [pn(x) for x in str(ph).split() if pn(x)]
+            if not pt:
+                continue
+            for i in range(len(toks) - len(pt) + 1):
+                if toks[i:i + len(pt)] == pt:
+                    for j in range(i, i + len(pt)):
+                        colors[j] = col
     return colors
 
 
@@ -272,10 +293,11 @@ def safe_center(preferred, box_h_frac, face):
     return SAFE_BOTTOM - half
 
 
-def build(video, out, cues, y_frac=0.44, keep_tmp=False, face_check=True):
+def build(video, out, cues, y_frac=0.44, keep_tmp=False, face_check=True, phrases=None):
     W, H = probe_size(video)
     words = words_with_times(cues)
     colors = assign_colors([w[0] for w in words])
+    colors = apply_phrase_colors([w[0] for w in words], colors, phrases)
     for w, c in zip(words, colors):
         w.append(c)
     chunks = chunk_words(words)
@@ -339,6 +361,7 @@ def main():
     ap.add_argument("--y", type=float, default=0.44, help="vertical centre of captions (0-1 of height)")
     ap.add_argument("--keep-tmp", action="store_true")
     ap.add_argument("--no-face-check", action="store_true", help="don't move captions off the face")
+    ap.add_argument("--colors", default="", help='optional JSON {"red": [phrases], "green": [phrases]}')
     a = ap.parse_args()
     if a.srt:
         cues = read_srt(a.srt)
@@ -347,7 +370,11 @@ def main():
             cues = cues_from_script(f.read(), probe_duration(a.video))
     else:
         sys.exit("give --srt or --script")
-    n = build(a.video, a.out, cues, a.y, a.keep_tmp, not a.no_face_check)
+    phrases = None
+    if a.colors.strip():
+        import json
+        phrases = json.loads(a.colors)
+    n = build(a.video, a.out, cues, a.y, a.keep_tmp, not a.no_face_check, phrases)
     print(f"burned {n} captions -> {a.out}")
 
 

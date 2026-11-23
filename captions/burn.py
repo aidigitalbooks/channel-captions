@@ -128,6 +128,36 @@ def assign_colors(words):
     return colors
 
 
+def assign_phrase_colors(words, red_phrases, green_phrases):
+    """Optional per-video highlights: colour exact phrases red or green, everything else black.
+
+    Phrases are matched word by word, ignoring case and punctuation. Longest phrase wins.
+    """
+    def pnorm(w):
+        return norm(w).strip("'")
+    toks = [pnorm(w) for w in words]
+    colors = [BLACK] * len(words)
+    rules = [(p, RED) for p in red_phrases] + [(p, GREEN) for p in green_phrases]
+    rules = [([pnorm(t) for t in p.split() if pnorm(t)], c) for p, c in rules]
+    rules = sorted([r for r in rules if r[0]], key=lambda r: -len(r[0]))
+    taken = [False] * len(words)
+    for ptoks, color in rules:
+        n = len(ptoks)
+        for i in range(len(toks) - n + 1):
+            if toks[i:i + n] == ptoks and not any(taken[i:i + n]):
+                for j in range(i, i + n):
+                    colors[j] = color
+                    taken[j] = True
+    return colors
+
+
+def load_highlights(path):
+    import json
+    with open(path, encoding="utf-8") as f:
+        d = json.load(f)
+    return d.get("red", []), d.get("green", [])
+
+
 # ---------------------------------------------------------------- chunking
 
 def chunk_words(words, max_words=5, max_chars=24):
@@ -272,10 +302,15 @@ def safe_center(preferred, box_h_frac, face):
     return SAFE_BOTTOM - half
 
 
-def build(video, out, cues, y_frac=0.44, keep_tmp=False, face_check=True):
+def build(video, out, cues, y_frac=0.44, keep_tmp=False, face_check=True, highlights=None):
     W, H = probe_size(video)
     words = words_with_times(cues)
-    colors = assign_colors([w[0] for w in words])
+    if highlights:
+        red, green = load_highlights(highlights)
+        colors = assign_phrase_colors([w[0] for w in words], red, green)
+        print(f"highlights: {sum(c == RED for c in colors)} red words, {sum(c == GREEN for c in colors)} green words")
+    else:
+        colors = assign_colors([w[0] for w in words])
     for w, c in zip(words, colors):
         w.append(c)
     chunks = chunk_words(words)
@@ -339,6 +374,7 @@ def main():
     ap.add_argument("--y", type=float, default=0.44, help="vertical centre of captions (0-1 of height)")
     ap.add_argument("--keep-tmp", action="store_true")
     ap.add_argument("--no-face-check", action="store_true", help="don't move captions off the face")
+    ap.add_argument("--highlights", help='optional JSON {"red": [phrases], "green": [phrases]}; replaces never-say/say colouring')
     a = ap.parse_args()
     if a.srt:
         cues = read_srt(a.srt)
@@ -347,7 +383,7 @@ def main():
             cues = cues_from_script(f.read(), probe_duration(a.video))
     else:
         sys.exit("give --srt or --script")
-    n = build(a.video, a.out, cues, a.y, a.keep_tmp, not a.no_face_check)
+    n = build(a.video, a.out, cues, a.y, a.keep_tmp, not a.no_face_check, a.highlights)
     print(f"burned {n} captions -> {a.out}")
 
 

@@ -24,17 +24,26 @@ def load():
 
 def match(title):
     t = (title or "").strip().lower()
-    hits = [c for c in load() if t.startswith(c["title_starts_with"].strip().lower())]
-    if not hits:
-        return None
-    # longest prefix wins, so "Nora Valeen Kids" never falls into "Nora Valeen"
-    return max(hits, key=lambda c: len(c["title_starts_with"]))
+    best, best_len = None, -1
+    for c in load():
+        for p in prefixes_of(c):
+            p = p.strip().lower()
+            # longest prefix wins, so "Nora Valeen Kids" never falls into "Nora Valeen"
+            if p and t.startswith(p) and len(p) > best_len:
+                best, best_len = c, len(p)
+    return best
+
+
+def prefixes_of(c):
+    """title_starts_with, plus any extra title prefixes in also_title_starts_with."""
+    return [c["title_starts_with"]] + list(c.get("also_title_starts_with") or [])
 
 
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "prefixes":
         for c in load():
-            print(c["title_starts_with"])
+            for p in prefixes_of(c):
+                print(p)
         return
     if len(sys.argv) >= 3 and sys.argv[1] == "match":
         c = match(sys.argv[2])

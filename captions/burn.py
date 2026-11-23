@@ -239,31 +239,24 @@ def render_chunk(chunk, video_w, path):
 SAFE_TOP = 0.10      # keep captions below the very top of the frame
 SAFE_BOTTOM = 0.78   # keep captions above TikTok/Reels buttons and description
 FACE_GAP = 0.025     # space between face and caption box (fraction of height)
+NO_FACE_Y = 0.70     # caption centre when no face (human or cat) can be found
 
 
-def find_face_band(video, samples=15):
-    """Return (top, bottom) of the presenter's face as fractions of height, or None.
+HUMAN_CASCADES = ("haarcascade_frontalface_alt2.xml", "haarcascade_frontalface_default.xml")
+# Fat Fortune is a cat: if no human face is found, look for a cat face instead.
+CAT_CASCADES = ("haarcascade_frontalcatface_extended.xml", "haarcascade_frontalcatface.xml")
 
-    Samples frames across the video and takes a generous band around every
-    face found, so head movement is covered too.
-    """
-    try:
-        import cv2
-    except ImportError:
-        print("face check: opencv not installed - using fixed caption height")
-        return None
-    cascades = [cv2.CascadeClassifier(cv2.data.haarcascades + n)
-                for n in ("haarcascade_frontalface_alt2.xml", "haarcascade_frontalface_default.xml")]
-    cap = cv2.VideoCapture(video)
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+
+def _scan_faces(cv2, frames, names):
+    """Return (tops, bottoms) of the biggest centred face in each frame, for one detector family."""
+    cascades = []
+    for n in names:
+        c = cv2.CascadeClassifier(cv2.data.haarcascades + n)
+        if not c.empty():
+            cascades.append(c)
     tops, bottoms = [], []
-    for k in range(samples):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(total * (k + 0.5) / samples))
-        ok, frame = cap.read()
-        if not ok:
-            continue
-        H, W = frame.shape[:2]
-        gray = cv2.equalizeHist(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+    for gray in frames:
+        H, W = gray.shape[:2]
         for casc in cascades:
             faces = casc.detectMultiScale(gray, 1.05, 4, minSize=(int(W * 0.12), int(W * 0.12)))
             # a real presenter face: reasonably big, roughly centred, in the upper 2/3
@@ -273,24 +266,52 @@ def find_face_band(video, samples=15):
                      and f[1] + f[3] / 2 <= H * 0.68]
             if faces:
                 x, y, w, h = max(faces, key=lambda f: f[2])
-                # Haar boxes stop at the mouth/chin line; extend for chin and hair
+                # Haar boxes stop at the mouth/chin line; extend for chin and hair/ears
                 tops.append((y - 0.25 * h) / H)
                 bottoms.append((y + 1.18 * h) / H)
                 break
-    cap.release()
-    if len(tops) < max(2, samples // 4):
-        print("face check: no clear face found - using fixed caption height")
+    return tops, bottoms
+
+
+def find_face_band(video, samples=15):
+    """Return (top, bottom) of the presenter's face as fractions of height, or None.
+
+    Samples frames across the video and takes a generous band around every
+    face found, so head movement is covered too. Tries human faces first,
+    then cat faces (for animal characters like Fat Fortune).
+    """
+    try:
+        import cv2
+    except ImportError:
+        print("face check: opencv not installed - captions go low in the frame")
         return None
-    band = (max(0.0, min(tops)), min(1.0, max(bottoms)))
-    print(f"face check: face from {band[0]:.2f} to {band[1]:.2f} of height ({len(tops)}/{samples} frames)")
-    return band
+    cap = cv2.VideoCapture(video)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+    frames = []
+    for k in range(samples):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(total * (k + 0.5) / samples))
+        ok, frame = cap.read()
+        if ok:
+            frames.append(cv2.equalizeHist(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)))
+    cap.release()
+    need = max(2, samples // 4)
+    for kind, names in (("face", HUMAN_CASCADES), ("cat face", CAT_CASCADES)):
+        tops, bottoms = _scan_faces(cv2, frames, names)
+        if len(tops) >= need:
+            band = (max(0.0, min(tops)), min(1.0, max(bottoms)))
+            print(f"face check: {kind} from {band[0]:.2f} to {band[1]:.2f} of height ({len(tops)}/{samples} frames)")
+            return band
+    print("face check: no clear face found - captions go low in the frame")
+    return None
 
 
 def safe_center(preferred, box_h_frac, face):
     """Pick the caption centre (fraction of height) that keeps the box off the face."""
     half = box_h_frac / 2
     if not face:
-        return preferred
+        # Face not found: chest height (0.44) could sit on the face, so go low instead,
+        # just above the TikTok/Reels buttons.
+        return min(max(preferred, NO_FACE_Y), SAFE_BOTTOM - half)
     top, bottom = face
     lo = bottom + FACE_GAP + half                     # highest centre that clears the chin
     if lo + half <= SAFE_BOTTOM:

@@ -133,10 +133,12 @@ def assign_phrase_colors(words, red_phrases, green_phrases):
 
     Phrases are matched word by word, ignoring case and punctuation. Longest phrase wins.
     """
-    toks = [norm(w) for w in words]
+    def pnorm(w):
+        return norm(w).strip("'")
+    toks = [pnorm(w) for w in words]
     colors = [BLACK] * len(words)
     rules = [(p, RED) for p in red_phrases] + [(p, GREEN) for p in green_phrases]
-    rules = [([norm(t) for t in p.split() if norm(t)], c) for p, c in rules]
+    rules = [([pnorm(t) for t in p.split() if pnorm(t)], c) for p, c in rules]
     rules = sorted([r for r in rules if r[0]], key=lambda r: -len(r[0]))
     taken = [False] * len(words)
     for ptoks, color in rules:

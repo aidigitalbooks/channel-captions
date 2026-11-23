@@ -86,7 +86,7 @@ jobs:
             # Highlighted versions get their own "-color" release, so a plain release is never overwritten.
             HL_ARGS=()
             SUFFIX=""
-            if [ -f "highlights/$SLUG-$ID.json" ]; then HL_ARGS=(--highlights "highlights/$SLUG-$ID.json"); SUFFIX="-color"; echo "Using highlights/$SLUG-$ID.json"; fi
+            if [ -f "highlights/$SLUG-$ID.json" ]; then HL_ARGS=(--highlights "highlights/$SLUG-$ID.json"); SUFFIX=$(python -c "import json,sys;print(json.load(open(sys.argv[1])).get('suffix','-color'))" "highlights/$SLUG-$ID.json"); echo "Using highlights/$SLUG-$ID.json"; fi
             TAG="$SLUG-$ID$SUFFIX"
             if gh release view "$TAG" >/dev/null 2>&1; then
               echo "Already done: $TAG"; continue

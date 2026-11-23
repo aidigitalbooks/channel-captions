@@ -56,6 +56,12 @@ def download(url, path):
 def to_epoch(v):
     if v is None:
         return None
+    if isinstance(v, str) and not v.replace(".", "", 1).isdigit():
+        from datetime import datetime
+        try:
+            return datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
     try:
         v = float(v)
         return v / 1000.0 if v > 1e12 else v
@@ -63,22 +69,67 @@ def to_epoch(v):
         return None
 
 
+LIST_PATHS = [
+    # v1/video.list may answer 410 GONE like v1/video_status.get did (2026-11-23); fall back to newer ones.
+    "/v1/video.list",
+    "/v3/videos",
+    "/v2/videos",
+]
+
+
+def unpack_list(raw):
+    """Return (videos, next_token) from any of HeyGen's list response shapes."""
+    data = raw.get("data", raw)
+    if isinstance(data, list):
+        return data, raw.get("token") or raw.get("next_token")
+    videos = data.get("videos") or data.get("list") or data.get("items") or []
+    return videos, data.get("token") or data.get("next_token") or raw.get("next_token")
+
+
+def list_videos(token=None):
+    """One page of recent videos from the first list endpoint that answers."""
+    errors = []
+    for path in LIST_PATHS:
+        sep = "&" if "?" in path else "?"
+        try:
+            raw = call(path + (f"{sep}token={token}" if token else ""), attempts=2)
+        except urllib.error.HTTPError as e:
+            errors.append(f"{path} -> HTTP {e.code}")
+            continue
+        except urllib.error.URLError as e:
+            errors.append(f"{path} -> {e.reason}")
+            continue
+        videos, nxt = unpack_list(raw)
+        print(f"list endpoint: {path} ({len(videos)} videos)", file=sys.stderr)
+        return videos, nxt
+    sys.exit("HeyGen video list failed on every endpoint: " + "; ".join(errors))
+
+
+def vfields(v):
+    vid = v.get("video_id") or v.get("id")
+    title = v.get("video_title") or v.get("title") or v.get("name") or ""
+    status = (v.get("status") or "").lower()
+    return vid, title, status, to_epoch(v.get("created_at"))
+
+
 def list_new(prefixes, hours):
     cutoff = time.time() - hours * 3600
-    data = call("/v1/video.list").get("data") or {}
-    videos = data.get("videos") or data.get("list") or []
-    for v in videos:
-        vid = v.get("video_id") or v.get("id")
-        title = v.get("video_title") or v.get("title") or ""
-        status = (v.get("status") or "").lower()
-        created = to_epoch(v.get("created_at"))
-        if not vid or status != "completed":
-            continue
-        if not any(title.lower().startswith(p.lower()) for p in prefixes):
-            continue
-        if created is not None and created < cutoff:
-            continue
-        print(vid)
+    token, seen = None, set()
+    for _ in range(10):  # page back until videos are older than the cutoff (max ~10 pages)
+        videos, token = list_videos(token)
+        older = 0
+        for v in videos:
+            vid, title, status, created = vfields(v)
+            if created is not None and created < cutoff:
+                older += 1
+                continue
+            if not vid or vid in seen or status not in ("completed", "complete", "success", "succeeded", "done"):
+                continue
+            seen.add(vid)
+            if any(title.lower().startswith(p.lower()) for p in prefixes):
+                print(vid)
+        if not token or not videos or older == len(videos):
+            break
 
 
 STATUS_PATHS = [
@@ -143,18 +194,17 @@ def fetch(video_id, out):
 
 
 def lookup_title(video_id):
-    """video_status.get doesn't always include the title; find it in the video list."""
+    """The status response doesn't always include the title; find it in the video list."""
     token = None
     for _ in range(10):  # up to ~10 pages of recent videos
-        path = "/v1/video.list" + (f"?token={token}" if token else "")
         try:
-            data = call(path).get("data") or {}
-        except Exception:
+            videos, token = list_videos(token)
+        except SystemExit:
             return ""
-        for v in data.get("videos") or data.get("list") or []:
-            if (v.get("video_id") or v.get("id")) == video_id:
-                return v.get("video_title") or v.get("title") or ""
-        token = data.get("token")
+        for v in videos:
+            vid, title, _, _ = vfields(v)
+            if vid == video_id:
+                return title
         if not token:
             break
     return ""

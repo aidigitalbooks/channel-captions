@@ -82,7 +82,12 @@ jobs:
             fi
             IFS=, read -r SLUG CAP_Y BRAND CHANNEL <<< "$MATCH"
             echo "Channel: $CHANNEL ($SLUG), Metricool brand $BRAND"
-            TAG="$SLUG-$ID"
+            # Optional per-video red/green phrases: highlights/<slug>-<id>.json (no file = default colouring).
+            # Highlighted versions get their own "-color" release, so a plain release is never overwritten.
+            HL_ARGS=()
+            SUFFIX=""
+            if [ -f "highlights/$SLUG-$ID.json" ]; then HL_ARGS=(--highlights "highlights/$SLUG-$ID.json"); SUFFIX="-color"; echo "Using highlights/$SLUG-$ID.json"; fi
+            TAG="$SLUG-$ID$SUFFIX"
             if gh release view "$TAG" >/dev/null 2>&1; then
               echo "Already done: $TAG"; continue
             fi
@@ -90,10 +95,7 @@ jobs:
               echo "::warning::No caption file from HeyGen for $ID - skipped."
               continue
             fi
-            OUT="$SLUG-$ID.mp4"
-            # Optional per-video red/green phrases: highlights/<slug>-<id>.json (no file = default colouring)
-            HL_ARGS=()
-            if [ -f "highlights/$SLUG-$ID.json" ]; then HL_ARGS=(--highlights "highlights/$SLUG-$ID.json"); echo "Using highlights/$SLUG-$ID.json"; fi
+            OUT="$SLUG-$ID$SUFFIX.mp4"
             if ! python captions/burn.py --video work/video.mp4 --srt work/captions.srt --out "$OUT" --y "$CAP_Y" "${HL_ARGS[@]}" < /dev/null; then
               echo "::error::Captioning failed for $ID - skipped, continuing with the rest."
               FAILED="$FAILED $ID"

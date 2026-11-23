@@ -81,22 +81,61 @@ def list_new(prefixes, hours):
         print(vid)
 
 
+STATUS_PATHS = [
+    # HeyGen began answering 410 GONE on the v1 status endpoint (2026-11-23), so try the newer
+    # endpoints too and use the first that answers.
+    "/v1/video_status.get?video_id={id}",
+    "/v2/videos/{id}",
+    "/v3/videos/{id}",
+    "/v2/video/{id}",
+]
+
+
+def first(d, *keys):
+    for k in keys:
+        v = d.get(k)
+        if v:
+            return v
+    return None
+
+
+def get_status(video_id):
+    errors = []
+    for tmpl in STATUS_PATHS:
+        path = tmpl.format(id=video_id)
+        try:
+            raw = call(path, attempts=2)
+        except urllib.error.HTTPError as e:
+            errors.append(f"{path} -> HTTP {e.code}")
+            continue
+        except urllib.error.URLError as e:
+            errors.append(f"{path} -> {e.reason}")
+            continue
+        d = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+        if isinstance(d.get("video"), dict):
+            d = d["video"]
+        print(f"status endpoint: {path} (fields: {', '.join(sorted(d.keys()))})")
+        return d
+    sys.exit("HeyGen status lookup failed on every endpoint: " + "; ".join(errors))
+
+
 def fetch(video_id, out):
     os.makedirs(out, exist_ok=True)
-    d = call(f"/v1/video_status.get?video_id={video_id}").get("data") or {}
-    if (d.get("status") or "").lower() != "completed":
-        sys.exit(f"video {video_id} is not completed (status={d.get('status')})")
-    video_url = d.get("video_url")
+    d = get_status(video_id)
+    status = (first(d, "status", "video_status") or "").lower()
+    if status not in ("completed", "complete", "success", "succeeded", "done"):
+        sys.exit(f"video {video_id} is not completed (status={status})")
+    video_url = first(d, "video_url", "url", "video_url_caption_free", "download_url")
     if not video_url:
         sys.exit("no video_url in HeyGen response")
     download(video_url, os.path.join(out, "video.mp4"))
-    srt_url = d.get("caption_url") or d.get("subtitle_url")
+    srt_url = first(d, "caption_url", "subtitle_url", "srt_url", "captions_url")
     if srt_url:
         download(srt_url, os.path.join(out, "captions.srt"))
         print("downloaded video + captions")
     else:
         print("downloaded video (no caption file from HeyGen)")
-    title = d.get("video_title") or d.get("title") or lookup_title(video_id)
+    title = first(d, "video_title", "title", "name") or lookup_title(video_id)
     with open(os.path.join(out, "meta.json"), "w") as f:
         # "untitled" never matches any channel, so videos that can't be identified are skipped
         json.dump({"video_id": video_id, "title": title or "untitled",

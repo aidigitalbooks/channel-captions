@@ -114,16 +114,22 @@ def vfields(v):
 
 def list_new(prefixes, hours):
     cutoff = time.time() - hours * 3600
-    videos, _ = list_videos()
-    for v in videos:
-        vid, title, status, created = vfields(v)
-        if not vid or status not in ("completed", "complete", "success", "succeeded", "done"):
-            continue
-        if not any(title.lower().startswith(p.lower()) for p in prefixes):
-            continue
-        if created is not None and created < cutoff:
-            continue
-        print(vid)
+    token, seen = None, set()
+    for _ in range(10):  # page back until videos are older than the cutoff (max ~10 pages)
+        videos, token = list_videos(token)
+        older = 0
+        for v in videos:
+            vid, title, status, created = vfields(v)
+            if created is not None and created < cutoff:
+                older += 1
+                continue
+            if not vid or vid in seen or status not in ("completed", "complete", "success", "succeeded", "done"):
+                continue
+            seen.add(vid)
+            if any(title.lower().startswith(p.lower()) for p in prefixes):
+                print(vid)
+        if not token or not videos or older == len(videos):
+            break
 
 
 STATUS_PATHS = [

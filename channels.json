@@ -9,6 +9,15 @@
       "caption_y": 0.44,
       "metricool_brand_id": 7812813,
       "heygen_avatar_group_id": "2dcab04e046e49faaa6aa1b9c0070806"
-    }, {"name": "Fat Fortune", "title_starts_with": "Fat Fortune", "slug": "fatfortune", "caption_style": "gus", "caption_y": 0.44, "metricool_brand_id": 8187589, "heygen_avatar_group_id": "93803365b2634ccba49fb94d9de3c5ee"}
+    }, {"name": "Fat Fortune", "title_starts_with": "Fat Fortune", "slug": "fatfortune", "caption_style": "gus", "caption_y": 0.44, "metricool_brand_id": 8187589, "heygen_avatar_group_id": "93803365b2634ccba49fb94d9de3c5ee"},
+    {
+      "name": "Sasha M",
+      "title_starts_with": "Sasha M",
+      "slug": "sasham",
+      "caption_style": "gus",
+      "caption_y": 0.44,
+      "metricool_brand_id": 7812356,
+      "heygen_avatar_group_id": "21b20058c64d4914952a3a8edbe8059b"
+    }
   ]
 }

@@ -16,6 +16,11 @@ on:
         description: "HeyGen video ID (leave empty to process all new channel videos)"
         required: false
         default: ""
+      dry_run:
+        description: "Only list which videos would be captioned (captions and publishes nothing)"
+        type: boolean
+        required: false
+        default: false
   repository_dispatch:
     types: [heygen_video]
 
@@ -55,6 +60,9 @@ jobs:
             python captions/heygen.py list-new "${ARGS[@]}" --hours 48 > ids.txt
           fi
           echo "Candidates:"; cat ids.txt || true
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            echo "Dry run - nothing captioned."; : > ids.txt
+          fi
 
       - name: Caption and publish
         run: |

@@ -91,7 +91,10 @@ jobs:
               continue
             fi
             OUT="$SLUG-$ID.mp4"
-            if ! python captions/burn.py --video work/video.mp4 --srt work/captions.srt --out "$OUT" --y "$CAP_Y" < /dev/null; then
+            # Optional per-video red/green phrases: highlights/<slug>-<id>.json (no file = default colouring)
+            HL_ARGS=()
+            if [ -f "highlights/$SLUG-$ID.json" ]; then HL_ARGS=(--highlights "highlights/$SLUG-$ID.json"); echo "Using highlights/$SLUG-$ID.json"; fi
+            if ! python captions/burn.py --video work/video.mp4 --srt work/captions.srt --out "$OUT" --y "$CAP_Y" "${HL_ARGS[@]}" < /dev/null; then
               echo "::error::Captioning failed for $ID - skipped, continuing with the rest."
               FAILED="$FAILED $ID"
               continue

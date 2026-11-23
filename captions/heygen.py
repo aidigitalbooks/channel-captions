@@ -83,7 +83,12 @@ def list_new(prefixes, hours):
 
 def fetch(video_id, out):
     os.makedirs(out, exist_ok=True)
-    d = call(f"/v1/video_status.get?video_id={video_id}").get("data") or {}
+    # v1 video_status.get now answers 410 GONE (seen 2026-11-23); v3 is the replacement.
+    try:
+        d = call(f"/v3/videos/{video_id}", attempts=2).get("data") or {}
+    except urllib.error.HTTPError as e:
+        print(f"v3 video lookup failed ({e.code}); trying v1", file=sys.stderr)
+        d = call(f"/v1/video_status.get?video_id={video_id}").get("data") or {}
     if (d.get("status") or "").lower() != "completed":
         sys.exit(f"video {video_id} is not completed (status={d.get('status')})")
     video_url = d.get("video_url")
